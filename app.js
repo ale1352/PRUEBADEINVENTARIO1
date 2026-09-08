@@ -1,32 +1,27 @@
-// Obtener elementos comunes
 const cuerpoTabla = document.getElementById('cuerpo-tabla');
 const panelPc = document.getElementById('panel-pc');
 const panelMovil = document.getElementById('panel-movil');
 
-// Cargar inventario al iniciar
 document.addEventListener('DOMContentLoaded', () => {
     mostrarInventario();
     detectarDispositivoYConfigurar();
 });
 
-// 1. DETECTAR SI ES PC O TELÉFONO MÓVIL AUTOMÁTICAMENTE
 function detectarDispositivoYConfigurar() {
     const esCelular = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 
     if (esCelular) {
-        // Mostrar panel móvil y ocultar PC
         panelMovil.style.display = 'block';
         panelPc.style.display = 'none';
-        iniciarCamaraCelular();
+        configurarEventosMovil();
     } else {
-        // Mostrar panel PC y ocultar móvil
         panelPc.style.display = 'block';
         panelMovil.style.display = 'none';
         configurarEventosPC();
     }
 }
 
-// ================= LOGICA PARA PC =================
+// LOGICA PARA PC
 function configurarEventosPC() {
     const codigoInput = document.getElementById('codigoInput');
     const nombreInput = document.getElementById('nombreInput');
@@ -48,36 +43,34 @@ function configurarEventosPC() {
     });
 }
 
-// ================= LOGICA PARA CELULAR (CÁMARA) =================
-let html5QrCode;
+// LOGICA MÓVIL REFACTORIZADA (Cámara infinita y tamaño responsivo)
+let html5QrCode = null;
+let enTransicion = false; // Evita clics dobles rápidos que traban la cámara
 
-function iniciarCamaraCelular() {
-    html5QrCode = new Html5Qrcode("reader");
-    
-    const config = { fps: 10, qrbox: { width: 250, height: 150 } };
+function configurarEventosMovil() {
+    const btnActivarCamara = document.getElementById('btnActivarCamara');
+    const btnGuardarMovil = document.getElementById('btnGuardarMovil');
+    const btnEscanearOtro = document.getElementById('btnEscanearOtro');
+    const btnCerrarCamara = document.getElementById('btnCerrarCamara');
 
-    html5QrCode.start(
-        { facingMode: "environment" }, // Usa la cámara trasera del celular
-        config,
-        (decodedText) => {
-            // ¡Código escaneado con éxito!
-            // Detenemos temporalmente la cámara para que el usuario registre el nombre
-            html5QrCode.stop().then(() => {
-                document.getElementById('reader').style.display = 'none';
-                document.getElementById('form-movil').style.display = 'block';
-                document.getElementById('codigoMovil').value = decodedText;
-                document.getElementById('nombreMovil').focus();
-            }).catch(err => console.log(err));
-        },
-        (errorMessage) => {
-            // Errores de escaneo en tiempo real (se ignoran para que siga buscando fluido)
-        }
-    ).catch(err => {
-        alert("No se pudo acceder a la cámara. Asegúrate de dar permisos de cámara en tu navegador.");
-    });
+    btnActivarCamara.onclick = async function() {
+        if (enTransicion) return;
+        await encenderCamara();
+    };
 
-    // Botón guardar desde el celular
-    document.getElementById('btnGuardarMovil').onclick = function() {
+    btnCerrarCamara.onclick = async function() {
+        if (enTransicion) return;
+        await apagarCamara();
+        reiniciarPanelMovil();
+    };
+
+    btnEscanearOtro.onclick = async function() {
+        if (enTransicion) return;
+        reiniciarPanelMovil();
+        await encenderCamara();
+    };
+
+    btnGuardarMovil.onclick = function() {
         const codigo = document.getElementById('codigoMovil').value;
         const nombre = document.getElementById('nombreMovil').value.trim();
         const cantidad = parseInt(document.getElementById('cantidadMovil').value);
@@ -88,24 +81,88 @@ function iniciarCamaraCelular() {
         }
 
         guardarItem(codigo, nombre, cantidad);
-        reiniciarEscaneoMovil();
-    };
-
-    // Botón para escanear otro sin guardar o reiniciar
-    document.getElementById('btnEscanearOtro').onclick = function() {
-        reiniciarEscaneoMovil();
+        reiniciarPanelMovil();
     };
 }
 
-function reiniciarEscaneoMovil() {
+async function encenderCamara() {
+    enTransicion = true;
+    const wrapperCamara = document.getElementById('wrapper-camara');
+    const formMovil = document.getElementById('form-movil');
+    const btnActivarCamara = document.getElementById('btnActivarCamara');
+
+    btnActivarCamara.style.display = 'none';
+    formMovil.style.display = 'none';
+    wrapperCamara.style.display = 'block';
+
+    // Limpieza total antes de iniciar de nuevo
+    await apagarCamara();
+
+    html5QrCode = new Html5Qrcode("reader");
+
+    // Cálculo dinámico para que el cuadro de escaneo encaje en la pantalla
+    const qrboxFunction = function(viewfinderWidth, viewfinderHeight) {
+        let minEdgePercentage = 0.75;
+        let minEdgeSize = Math.min(viewfinderWidth, viewfinderHeight);
+        let qrboxSize = Math.floor(minEdgeSize * minEdgePercentage);
+        return {
+            width: Math.min(qrboxSize, 220),
+            height: Math.min(Math.floor(qrboxSize * 0.6), 130)
+        };
+    };
+
+    const config = { 
+        fps: 15, 
+        qrbox: qrboxFunction,
+        aspectRatio: 1.333333
+    };
+
+    try {
+        await html5QrCode.start(
+            { facingMode: "environment" },
+            config,
+            async (decodedText) => {
+                // Al leer el código, apaga la cámara limpiamente antes de pedir el nombre
+                await apagarCamara();
+                wrapperCamara.style.display = 'none';
+                formMovil.style.display = 'block';
+                document.getElementById('codigoMovil').value = decodedText;
+                document.getElementById('nombreMovil').focus();
+            },
+            (errorMessage) => {}
+        );
+    } catch (err) {
+        alert("No se pudo iniciar la cámara. Recuerda usar GitHub Pages (HTTPS).");
+        await apagarCamara();
+        reiniciarPanelMovil();
+    } finally {
+        enTransicion = false;
+    }
+}
+
+async function apagarCamara() {
+    if (html5QrCode) {
+        try {
+            if (html5QrCode.isScanning) {
+                await html5QrCode.stop();
+            }
+            await html5QrCode.clear();
+        } catch (e) {
+            console.log("Limpiando cámara:", e);
+        }
+        html5QrCode = null;
+    }
+}
+
+function reiniciarPanelMovil() {
     document.getElementById('nombreMovil').value = '';
     document.getElementById('cantidadMovil').value = '1';
     document.getElementById('form-movil').style.display = 'none';
-    document.getElementById('reader').style.display = 'block';
-    iniciarCamaraCelular();
+    document.getElementById('wrapper-camara').style.display = 'none';
+    document.getElementById('btnActivarCamara').style.display = 'block';
 }
 
-// ================= LÓGICA GENERAL DE DATOS (LOCALSTORAGE) =================
+// LOGICA DE DATOS LOCALSTORAGE
 function guardarItem(codigo, nombre, cantidad) {
     if (codigo === "" || nombre === "") {
         alert("Faltan datos del producto.");
@@ -131,7 +188,7 @@ function mostrarInventario() {
     const codigos = Object.keys(inventario);
 
     if (codigos.length === 0) {
-        cuerpoTabla.innerHTML = `<tr><td colspan="4" class="text-center text-muted">No hay productos registrados.</td></tr>`;
+        cuerpoTabla.innerHTML = `<tr><td colspan="4" class="text-center text-muted">Sin productos registrados.</td></tr>`;
         return;
     }
 
@@ -143,7 +200,7 @@ function mostrarInventario() {
                 <td>${item.nombre}</td>
                 <td><strong>${item.cantidad}</strong></td>
                 <td>
-                    <button class="btn btn-danger btn-sm" onclick="eliminarProducto('${item.codigo}')">Eliminar</button>
+                    <button class="btn btn-danger btn-sm py-0 px-1" onclick="eliminarProducto('${item.codigo}')">X</button>
                 </td>
             </tr>
         `;
@@ -151,7 +208,7 @@ function mostrarInventario() {
 }
 
 function eliminarProducto(codigo) {
-    if (confirm("¿Estás seguro de eliminar este producto?")) {
+    if (confirm("¿Eliminar producto del stock?")) {
         let inventario = JSON.parse(localStorage.getItem('inventario')) || {};
         delete inventario[codigo];
         localStorage.setItem('inventario', JSON.stringify(inventario));
